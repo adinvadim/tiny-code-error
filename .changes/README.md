@@ -2,7 +2,7 @@
 
 Add one Markdown file per user-visible change. Do not edit `CHANGELOG.md` by hand for new entries.
 
-- Name the file with a short unique kebab-case slug, for example `isCodeError-util.md`. Lowercase letters, digits, `.`, `_` and `-` only.
+- Name the file with a short unique kebab-case slug, for example `is-code-error-util.md`. Lowercase letters, digits, `.`, `_` and `-` only; other names are ignored by the release.
 - Use a `## Changes` heading and English bullets:
 
 ```markdown
