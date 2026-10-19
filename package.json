@@ -28,7 +28,7 @@
     "test:tsd": "tsd",
     "typecheck": "tsc --noEmit",
     "watch": "pkgroll --watch",
-    "release": "npm run test &&  changelogen --release && npm publish && git push --follow-tags"
+    "release": "npm run test && node scripts/changelog-release.mjs && npm publish && git push --follow-tags"
   },
   "devDependencies": {
     "@skypack/package-check": "0.2.2",
