@@ -12,6 +12,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  changelogenCliPath,
   consumeFragments,
   insertIntoRelease,
   listFragments,
@@ -20,12 +21,8 @@ import {
   runRelease,
 } from "../scripts/changelog-release.mjs";
 
-const changelogenBin = join(
-  dirname(fileURLToPath(import.meta.url)),
-  "..",
-  "node_modules",
-  ".bin",
-  "changelogen",
+const changelogenCli = changelogenCliPath(
+  join(dirname(fileURLToPath(import.meta.url)), ".."),
 );
 
 Object.assign(process.env, {
@@ -117,7 +114,15 @@ describe("rendering and insertion", () => {
       { name: "b.md", sections: new Map([["Changes", ["- Second"]]]) },
       { name: "a.md", sections: new Map([["Changes", ["- First"]]]) },
     ]);
-    expect(block).toEqual(["### Changes", "", "- First", "", "- Second", ""]);
+    expect(block).toEqual(["### Changes", "", "- First", "- Second", ""]);
+  });
+
+  it("separates non-bullet paragraphs from the next fragment", () => {
+    const block = renderFragmentBlock([
+      { name: "a.md", sections: new Map([["Changes", ["Intro paragraph."]]]) },
+      { name: "b.md", sections: new Map([["Changes", ["- Second"]]]) },
+    ]);
+    expect(block).toEqual(["### Changes", "", "Intro paragraph.", "", "- Second", ""]);
   });
 
   it("inserts before commit-derived groups in the matching release only", () => {
@@ -168,7 +173,7 @@ describe("runRelease", () => {
       commitFile(dir, ".changes/add-feature-x.md", "## Changes\n\n- Add feature x\n", "docs(changes): add feature x");
       writeIn(dir, ".changes/later.md", "## Changes\n\n- Not frozen\n");
 
-      const result = runRelease({ cwd: dir, changelogenBin, github: false });
+      const result = runRelease({ cwd: dir, changelogenCli, github: false });
 
       expect(result).toEqual({
         version: "1.1.0",
@@ -198,7 +203,7 @@ describe("runRelease", () => {
       const dir = makeRepo();
       commitFile(dir, "src/feature.ts", "export const x = 1\n", "feat: add feature x");
 
-      const result = runRelease({ cwd: dir, changelogenBin, github: false });
+      const result = runRelease({ cwd: dir, changelogenCli, github: false });
 
       expect(result.fragments).toEqual([]);
       const changelog = readFileSync(join(dir, "CHANGELOG.md"), "utf8");
@@ -213,7 +218,7 @@ describe("runRelease", () => {
     () => {
       const dir = makeRepo();
       writeIn(dir, "CHANGELOG.md", "# Changelog\n\nedited\n");
-      expect(() => runRelease({ cwd: dir, changelogenBin, github: false })).toThrow(
+      expect(() => runRelease({ cwd: dir, changelogenCli, github: false })).toThrow(
         /Tracked changes present/,
       );
     },
@@ -226,11 +231,11 @@ describe("runRelease", () => {
       const dir = makeRepo();
       commitFile(dir, "src/feature.ts", "export const x = 1\n", "feat: add feature x");
       commitFile(dir, ".changes/add-x.md", "## Changes\n\n- Add x\n", "docs: add x");
-      runRelease({ cwd: dir, changelogenBin, github: false });
+      runRelease({ cwd: dir, changelogenCli, github: false });
       const commitsBefore = git(dir, "rev-list", "--count", "HEAD").trim();
       git(dir, "tag", "-d", "v1.1.0");
 
-      const result = runRelease({ cwd: dir, changelogenBin, github: false });
+      const result = runRelease({ cwd: dir, changelogenCli, github: false });
 
       expect(result).toEqual({ version: "1.1.0", resumed: true, fragments: [], consumed: [], kept: [] });
       expect(git(dir, "rev-list", "--count", "HEAD").trim()).toBe(commitsBefore);

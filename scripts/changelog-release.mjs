@@ -97,7 +97,9 @@ export function renderFragmentBlock(fragments) {
     for (const [heading, lines] of fragment.sections) {
       if (!groups.has(heading)) groups.set(heading, []);
       const bodies = groups.get(heading);
-      if (bodies.length > 0) bodies.push("");
+      const previous = bodies[bodies.length - 1];
+      const bulletJoin = /^[-*] /.test(previous ?? "") && /^[-*] /.test(lines[0]);
+      if (bodies.length > 0 && !bulletJoin) bodies.push("");
       bodies.push(...lines);
     }
   }
@@ -151,8 +153,16 @@ export function consumeFragments(cwd, fragments) {
   return { consumed, kept };
 }
 
-function runChangelogen(bin, cwd, args) {
-  const result = spawnSync(bin, args, {
+// Launches changelogen's JS entry with the current Node binary. Spawning the
+// node_modules/.bin shim directly fails on Windows, where it is a .cmd file.
+export function changelogenCliPath(root) {
+  const manifest = readJson(join(root, "node_modules", "changelogen", "package.json"));
+  const bin = typeof manifest.bin === "string" ? manifest.bin : manifest.bin.changelogen;
+  return join(root, "node_modules", "changelogen", bin);
+}
+
+function runChangelogen(cli, cwd, args) {
+  const result = spawnSync(process.execPath, [cli, ...args], {
     cwd,
     stdio: ["ignore", "inherit", "inherit"],
   });
@@ -163,15 +173,15 @@ function runChangelogen(bin, cwd, args) {
   }
 }
 
-function finalizeRelease({ cwd, changelogenBin, tag, github }) {
+function finalizeRelease({ cwd, changelogenCli, tag, github }) {
   git(cwd, ["tag", "-am", tag, tag]);
   const origin = tryGit(cwd, ["remote", "get-url", "origin"]) ?? "";
   if (github && /github\.com/.test(origin)) {
-    runChangelogen(changelogenBin, cwd, ["gh", "release", tag]);
+    runChangelogen(changelogenCli, cwd, ["gh", "release", tag]);
   }
 }
 
-export function runRelease({ cwd, changelogenBin, github = true }) {
+export function runRelease({ cwd, changelogenCli, github = true }) {
   if (git(cwd, ["status", "--porcelain", "--untracked-files=no"]).trim()) {
     throw new Error("Tracked changes present; commit or discard them before releasing.");
   }
@@ -183,14 +193,14 @@ export function runRelease({ cwd, changelogenBin, github = true }) {
 
   // An interrupted run after the release commit only needs the tag and GitHub release.
   if (headSubject === `chore(release): ${tag}` && !tagExists) {
-    finalizeRelease({ cwd, changelogenBin, tag, github });
+    finalizeRelease({ cwd, changelogenCli, tag, github });
     return { version: current, resumed: true, fragments: [], consumed: [], kept: [] };
   }
 
   const frozen = git(cwd, ["rev-parse", "HEAD"]).trim();
   const fragments = listFragments(cwd, frozen);
 
-  runChangelogen(changelogenBin, cwd, ["--release", "--no-commit", "--no-tag", "--no-github"]);
+  runChangelogen(changelogenCli, cwd, ["--release", "--no-commit", "--no-tag", "--no-github"]);
   const version = readJson(pkgPath).version;
   if (version === current) throw new Error("changelogen did not bump the version");
 
@@ -206,7 +216,7 @@ export function runRelease({ cwd, changelogenBin, github = true }) {
   const { consumed, kept } = consumeFragments(cwd, fragments);
   git(cwd, ["add", "--", "CHANGELOG.md", "package.json"]);
   git(cwd, ["commit", "-m", `chore(release): v${version}`]);
-  finalizeRelease({ cwd, changelogenBin, tag: `v${version}`, github });
+  finalizeRelease({ cwd, changelogenCli, tag: `v${version}`, github });
   return {
     version,
     resumed: false,
@@ -224,7 +234,7 @@ if (invokedDirectly) {
   const here = dirname(fileURLToPath(import.meta.url));
   const result = runRelease({
     cwd: process.cwd(),
-    changelogenBin: join(here, "..", "node_modules", ".bin", "changelogen"),
+    changelogenCli: changelogenCliPath(join(here, "..")),
     github: !process.argv.includes("--no-github"),
   });
   console.log(JSON.stringify(result));
