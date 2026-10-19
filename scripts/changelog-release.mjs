@@ -116,10 +116,10 @@ export function insertIntoRelease(changelog, version, blockLines) {
   const lines = changelog.split("\n");
   const start = lines.findIndex((line) => line === `## v${version}`);
   if (start === -1) throw new Error(`CHANGELOG.md has no "## v${version}" section`);
-  let end = lines.findIndex((line, i) => i > start && /^## /.test(line));
+  let end = lines.findIndex((line, i) => i > start && line.startsWith("## "));
   if (end === -1) end = lines.length;
   const groupAt = lines.findIndex(
-    (line, i) => i > start && i < end && /^### /.test(line),
+    (line, i) => i > start && i < end && line.startsWith("### "),
   );
   const body = trimBlankEdges(blockLines);
   if (groupAt !== -1) {
@@ -161,27 +161,47 @@ export function changelogenCliPath(root) {
   return join(root, "node_modules", "changelogen", bin);
 }
 
-function runChangelogen(cli, cwd, args) {
-  const result = spawnSync(process.execPath, [cli, ...args], {
+function runNode(entry, cwd, args) {
+  const result = spawnSync(process.execPath, [entry, ...args], {
     cwd,
     stdio: ["ignore", "inherit", "inherit"],
   });
   if (result.status !== 0) {
     throw new Error(
-      `changelogen ${args.join(" ")} failed (${result.status ?? result.signal})`,
+      `${entry.split(/[\\/]/).pop()} ${args.join(" ")} failed (${result.status ?? result.signal})`,
     );
   }
 }
 
-function finalizeRelease({ cwd, changelogenCli, tag, github }) {
-  git(cwd, ["tag", "-am", tag, tag]);
-  const origin = tryGit(cwd, ["remote", "get-url", "origin"]) ?? "";
-  if (github && /github\.com/.test(origin)) {
-    runChangelogen(changelogenCli, cwd, ["gh", "release", tag]);
+// Creates the tag on HEAD, or accepts an existing tag only if it already points there.
+function ensureTag(cwd, tag) {
+  const head = git(cwd, ["rev-parse", "HEAD"]).trim();
+  const target = tryGit(cwd, ["rev-parse", "-q", "--verify", `refs/tags/${tag}^{commit}`])?.trim();
+  if (target === undefined) {
+    git(cwd, ["tag", "-am", tag, tag]);
+  } else if (target !== head) {
+    throw new Error(`${tag} does not point to HEAD (${target} != ${head})`);
   }
 }
 
-export function runRelease({ cwd, changelogenCli, github = true }) {
+// GitHub sync is idempotent: `changelogen gh release` updates an existing release.
+// githubCli replaces the default boundary so tests never reach GitHub.
+function syncGithubRelease({ cwd, changelogenCli, githubCli, tag, github }) {
+  if (!github) return;
+  if (githubCli !== undefined) {
+    runNode(githubCli, cwd, ["release", tag]);
+    return;
+  }
+  const origin = tryGit(cwd, ["remote", "get-url", "origin"]) ?? "";
+  if (/github\.com/.test(origin)) {
+    runNode(changelogenCli, cwd, ["gh", "release", tag]);
+  }
+}
+
+/**
+ * @param {{ cwd: string, changelogenCli: string, github?: boolean, githubCli?: string }} options
+ */
+export function runRelease({ cwd, changelogenCli, github = true, githubCli }) {
   if (git(cwd, ["status", "--porcelain", "--untracked-files=no"]).trim()) {
     throw new Error("Tracked changes present; commit or discard them before releasing.");
   }
@@ -189,18 +209,18 @@ export function runRelease({ cwd, changelogenCli, github = true }) {
   const current = readJson(pkgPath).version;
   const tag = `v${current}`;
   const headSubject = git(cwd, ["log", "-1", "--format=%s"]).trim();
-  const tagExists = tryGit(cwd, ["rev-parse", "-q", "--verify", `refs/tags/${tag}`]) !== null;
 
-  // An interrupted run after the release commit only needs the tag and GitHub release.
-  if (headSubject === `chore(release): ${tag}` && !tagExists) {
-    finalizeRelease({ cwd, changelogenCli, tag, github });
+  // HEAD is already the release commit: finish tagging and GitHub sync, never bump again.
+  if (headSubject === `chore(release): ${tag}`) {
+    ensureTag(cwd, tag);
+    syncGithubRelease({ cwd, changelogenCli, githubCli, tag, github });
     return { version: current, resumed: true, fragments: [], consumed: [], kept: [] };
   }
 
   const frozen = git(cwd, ["rev-parse", "HEAD"]).trim();
   const fragments = listFragments(cwd, frozen);
 
-  runChangelogen(changelogenCli, cwd, ["--release", "--no-commit", "--no-tag", "--no-github"]);
+  runNode(changelogenCli, cwd, ["--release", "--no-commit", "--no-tag", "--no-github"]);
   const version = readJson(pkgPath).version;
   if (version === current) throw new Error("changelogen did not bump the version");
 
@@ -216,7 +236,8 @@ export function runRelease({ cwd, changelogenCli, github = true }) {
   const { consumed, kept } = consumeFragments(cwd, fragments);
   git(cwd, ["add", "--", "CHANGELOG.md", "package.json"]);
   git(cwd, ["commit", "-m", `chore(release): v${version}`]);
-  finalizeRelease({ cwd, changelogenCli, tag: `v${version}`, github });
+  ensureTag(cwd, `v${version}`);
+  syncGithubRelease({ cwd, changelogenCli, githubCli, tag: `v${version}`, github });
   return {
     version,
     resumed: false,

@@ -246,4 +246,89 @@ describe("runRelease", () => {
     },
     60_000,
   );
+
+  it(
+    "resumes the exact release commit when its tag already exists",
+    () => {
+      const dir = makeRepo();
+      commitFile(dir, "src/feature.ts", "export const x = 1\n", "feat: add feature x");
+      runRelease({ cwd: dir, changelogenCli, github: false });
+      const head = git(dir, "rev-parse", "HEAD").trim();
+      const commitsBefore = git(dir, "rev-list", "--count", "HEAD").trim();
+
+      const result = runRelease({ cwd: dir, changelogenCli, github: false });
+
+      expect(result).toEqual({ version: "1.1.0", resumed: true, fragments: [], consumed: [], kept: [] });
+      expect(git(dir, "rev-list", "--count", "HEAD").trim()).toBe(commitsBefore);
+      expect(git(dir, "rev-parse", "refs/tags/v1.1.0^{commit}").trim()).toBe(head);
+    },
+    60_000,
+  );
+
+  it(
+    "retries GitHub sync after a failure that happens after tagging",
+    () => {
+      const dir = makeRepo();
+      const fakeGh = writeFakeGh();
+      process.env.FAKE_GH_STATE = join(scratchDir(), "gh-calls.log");
+      writeFileSync(`${process.env.FAKE_GH_STATE}.fail`, "");
+      commitFile(dir, "src/feature.ts", "export const x = 1\n", "feat: add feature x");
+
+      expect(() => runRelease({ cwd: dir, changelogenCli, githubCli: fakeGh })).toThrow(
+        /release v1\.1\.0 failed/,
+      );
+      expect(git(dir, "log", "-1", "--format=%s").trim()).toBe("chore(release): v1.1.0");
+      expect(git(dir, "rev-parse", "refs/tags/v1.1.0^{commit}").trim()).toBe(
+        git(dir, "rev-parse", "HEAD").trim(),
+      );
+      const commitsAfterFailure = git(dir, "rev-list", "--count", "HEAD").trim();
+
+      const result = runRelease({ cwd: dir, changelogenCli, githubCli: fakeGh });
+
+      expect(result).toMatchObject({ version: "1.1.0", resumed: true });
+      expect(git(dir, "rev-list", "--count", "HEAD").trim()).toBe(commitsAfterFailure);
+      expect(readFileSync(process.env.FAKE_GH_STATE, "utf8").trim().split("\n")).toEqual([
+        "release v1.1.0",
+        "release v1.1.0",
+      ]);
+    },
+    60_000,
+  );
+
+  it(
+    "refuses to resume when the release tag points at another commit",
+    () => {
+      const dir = makeRepo();
+      commitFile(dir, "src/feature.ts", "export const x = 1\n", "feat: add feature x");
+      runRelease({ cwd: dir, changelogenCli, github: false });
+      git(dir, "tag", "-f", "v1.1.0", "HEAD~1");
+
+      expect(() => runRelease({ cwd: dir, changelogenCli, github: false })).toThrow(
+        /does not point to HEAD/,
+      );
+    },
+    60_000,
+  );
 });
+
+function scratchDir() {
+  const dir = mkdtempSync(join(tmpdir(), "release-gh-"));
+  dirs.push(dir);
+  return dir;
+}
+
+// Stands in for `changelogen gh release`: logs each call and fails once when marked.
+function writeFakeGh() {
+  const path = join(scratchDir(), "fake-gh.mjs");
+  writeFileSync(
+    path,
+    [
+      'import { appendFileSync, existsSync, rmSync } from "node:fs";',
+      "const state = process.env.FAKE_GH_STATE;",
+      'appendFileSync(state, process.argv.slice(2).join(" ") + "\\n");',
+      "if (existsSync(state + \".fail\")) { rmSync(state + \".fail\"); process.exit(1); }",
+      "",
+    ].join("\n"),
+  );
+  return path;
+}
