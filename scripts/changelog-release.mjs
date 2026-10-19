@@ -192,10 +192,27 @@ function syncGithubRelease({ cwd, changelogenCli, githubCli, tag, github }) {
     runNode(githubCli, cwd, ["release", tag]);
     return;
   }
-  const origin = tryGit(cwd, ["remote", "get-url", "origin"]) ?? "";
-  if (/github\.com/.test(origin)) {
+  if (resolveGithubProvider(cwd, changelogenCli) === "github") {
     runNode(changelogenCli, cwd, ["gh", "release", tag]);
   }
+}
+
+// Asks changelogen's own repo resolution (package.json first, then origin), so SSH host
+// aliases behave as they do in its release path. An origin-URL regex would diverge from it.
+export function resolveGithubProvider(cwd, changelogenCli) {
+  const index = pathToFileURL(join(dirname(changelogenCli), "index.mjs")).href;
+  const probe = [
+    `const { resolveRepoConfig } = await import(process.argv[1]);`,
+    "const repo = await resolveRepoConfig(process.cwd());",
+    'process.stdout.write(repo?.provider ?? "");',
+  ].join("\n");
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", probe, index], {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "inherit"],
+  });
+  if (result.status !== 0) throw new Error("could not resolve the repository provider");
+  return result.stdout.trim();
 }
 
 /**

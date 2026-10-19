@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   changelogenCliPath,
   consumeFragments,
+  resolveGithubProvider,
   insertIntoRelease,
   listFragments,
   parseFragment,
@@ -294,6 +295,18 @@ describe("runRelease", () => {
     },
     60_000,
   );
+
+  it("resolves GitHub from package.json even when origin is an SSH host alias", () => {
+    const dir = makeRepo();
+    writeIn(
+      dir,
+      "package.json",
+      JSON.stringify({ name: "fixture", version: "1.0.0", repository: "https://github.com/adinvadim/tiny-code-error" }, null, 2) + "\n",
+    );
+    git(dir, "remote", "add", "origin", "git@github-work:adinvadim/tiny-code-error.git");
+
+    expect(resolveGithubProvider(dir, changelogenCli)).toBe("github");
+  });
 
   it(
     "refuses to resume when the release tag points at another commit",
